@@ -16,6 +16,7 @@
     <section aria-labelledby="activities-heading">
       <h2 id="activities-heading">可報名的活動</h2>
       <button id="add-activity-button" type="button">新增活動</button>
+      <button id="print-button" type="button">列印活動</button>
       <div id="activity-list" aria-live="polite"></div>
     </section>
   </main>
@@ -54,38 +55,44 @@
 
   <script>
     (() => {
-      const storageKey = "activity-registration-data";
       const activityList = document.getElementById("activity-list");
       const activityDialog = document.getElementById("activity-dialog");
       const signupDialog = document.getElementById("signup-dialog");
       const activityForm = document.getElementById("activity-form");
       const signupForm = document.getElementById("signup-form");
-      let activities = loadActivities();
+      let activities = [];
       let selectedActivityId = null;
       let printHiddenStates = [];
 
-      function loadActivities() {
+      async function apiRequest(url, options = {}) {
+        const response = await fetch(url, options);
+        let payload;
         try {
-          const stored = localStorage.getItem(storageKey);
-          if (!stored) return [];
-          const parsed = JSON.parse(stored);
-          if (!Array.isArray(parsed)) throw new Error("活動資料格式不正確。");
-          return parsed;
+          payload = await response.json();
         } catch (error) {
-          console.error("無法讀取活動資料：", error);
-          alert("無法讀取已儲存的活動資料，請確認瀏覽器儲存空間後重新整理。");
-          return [];
+          throw new Error(`伺服器回應格式錯誤（HTTP ${response.status}）。`, { cause: error });
         }
+        if (!response.ok) {
+          throw new Error(payload.detail || `伺服器請求失敗（HTTP ${response.status}）。`);
+        }
+        return payload;
       }
 
-      function saveActivities() {
+      function showLoadError(error) {
+        console.error("無法讀取活動資料：", error);
+        activityList.replaceChildren();
+        const message = makeElement("p", `讀取活動失敗：${error.message}`);
+        message.setAttribute("role", "alert");
+        activityList.append(message);
+      }
+
+      async function loadActivities() {
+        activityList.replaceChildren(makeElement("p", "正在載入活動…"));
         try {
-          localStorage.setItem(storageKey, JSON.stringify(activities));
-          return true;
+          activities = await apiRequest("/api/events");
+          renderActivities();
         } catch (error) {
-          console.error("無法儲存活動資料：", error);
-          alert("資料儲存失敗，請確認瀏覽器儲存空間設定。");
-          return false;
+          showLoadError(error);
         }
       }
 
@@ -187,30 +194,27 @@
         printHiddenStates = [];
       });
 
-      activityForm.addEventListener("submit", (event) => {
+      activityForm.addEventListener("submit", async (event) => {
         event.preventDefault();
-        const formData = new FormData(activityForm);
-        const activity = {
-          id: crypto.randomUUID(),
-          name: formData.get("name").trim(),
-          date: formData.get("date"),
-          description: formData.get("description").trim(),
-          registrations: []
-        };
-        if (!activity.name) {
-          document.getElementById("activity-name").focus();
-          return;
+        const submitButton = activityForm.querySelector('button[type="submit"]');
+        submitButton.disabled = true;
+        try {
+          const activity = await apiRequest("/api/events", {
+            method: "POST",
+            body: new FormData(activityForm)
+          });
+          activities.unshift(activity);
+          activityDialog.close();
+          renderActivities();
+        } catch (error) {
+          console.error("建立活動失敗：", error);
+          alert(`建立活動失敗：${error.message}`);
+        } finally {
+          submitButton.disabled = false;
         }
-        activities.push(activity);
-        if (!saveActivities()) {
-          activities.pop();
-          return;
-        }
-        activityDialog.close();
-        renderActivities();
       });
 
-      signupForm.addEventListener("submit", (event) => {
+      signupForm.addEventListener("submit", async (event) => {
         event.preventDefault();
         const activity = activities.find((item) => item.id === selectedActivityId);
         if (!activity) {
@@ -228,17 +232,26 @@
           alert("這個連絡電話已報名此活動。");
           return;
         }
-        activity.registrations.push(registration);
-        if (!saveActivities()) {
-          activity.registrations.pop();
-          return;
+        const submitButton = signupForm.querySelector('button[type="submit"]');
+        submitButton.disabled = true;
+        try {
+          const savedRegistration = await apiRequest(
+            `/api/events/${activity.id}/registrations`,
+            { method: "POST", body: new FormData(signupForm) }
+          );
+          activity.registrations.push(savedRegistration);
+          signupDialog.close();
+          renderActivities();
+          alert("報名完成！");
+        } catch (error) {
+          console.error("報名失敗：", error);
+          alert(`報名失敗：${error.message}`);
+        } finally {
+          submitButton.disabled = false;
         }
-        signupDialog.close();
-        renderActivities();
-        alert("報名完成！");
       });
 
-      renderActivities();
+      loadActivities();
     })();
   </script>
 </body>

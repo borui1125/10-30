@@ -5,16 +5,16 @@
 
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
-from typing import Any, List, Optional
+from datetime import date
+from typing import List, Optional
 from urllib.parse import quote
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Form, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 # 匯入組員 A 定義之資料模型
 from models import Base, Event, Registration
@@ -59,18 +59,141 @@ def get_db():
 async def lifespan(app: FastAPI):
     try:
         Base.metadata.create_all(bind=engine)
-        print("✅ [DB] 資料表連線與結構確認成功")
+        if "event_date" not in {column["name"] for column in inspect(engine).get_columns("events")}:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE events ADD COLUMN event_date DATE"))
+        print("[DB] Database schema initialized successfully.")
     except Exception as e:
-        print(f"⚠️ [DB Warning] 資料表初始化未完成（請確認 PostgreSQL 服務與環境變數設定）：{e}")
+        print(f"[DB Warning] Database initialization failed; check PostgreSQL service and DATABASE_URL: {e}")
     yield
 
 
 app = FastAPI(title="活動報名系統", lifespan=lifespan)
 
-# 確保 templates 目錄存在（不建立任何模板檔案）
-TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
-TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
+templates = Jinja2Templates(directory=TEMPLATES_DIR)
+
+
+@app.get("/", response_class=HTMLResponse)
+def activity_app():
+    return FileResponse(
+        os.path.join(os.path.dirname(__file__), "index.html"),
+        media_type="text/html",
+    )
+
+
+@app.get("/api/events")
+def get_events(db: Session = Depends(get_db)):
+    try:
+        events = (
+            db.query(Event)
+            .options(selectinload(Event.registrations))
+            .order_by(Event.id.desc())
+            .all()
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"讀取活動清單失敗：{e}",
+        ) from e
+
+    return [
+        {
+            "id": event.id,
+            "name": event.name,
+            "date": event.event_date.isoformat() if event.event_date else "",
+            "description": event.description or "",
+            "registrations": [
+                {
+                    "id": registration.id,
+                    "name": registration.name,
+                    "phone": registration.phone,
+                }
+                for registration in event.registrations
+            ],
+        }
+        for event in events
+    ]
+
+
+@app.post("/api/events", status_code=status.HTTP_201_CREATED)
+def create_event_api(
+    name: str = Form(""),
+    date_value: Optional[date] = Form(None, alias="date"),
+    description: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+):
+    name_clean = name.strip()
+    if not name_clean:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="活動名稱為必填欄位",
+        )
+
+    event = Event(
+        name=name_clean,
+        event_date=date_value,
+        description=description.strip() if description else None,
+    )
+    try:
+        db.add(event)
+        db.commit()
+        db.refresh(event)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"建立活動時發生錯誤：{e}",
+        ) from e
+
+    return {
+        "id": event.id,
+        "name": event.name,
+        "date": event.event_date.isoformat() if event.event_date else "",
+        "description": event.description or "",
+        "registrations": [],
+    }
+
+
+@app.post("/api/events/{event_id}/registrations", status_code=status.HTTP_201_CREATED)
+def create_registration_api(
+    event_id: int,
+    name: str = Form(""),
+    phone: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    event = db.query(Event).filter(Event.id == event_id).first()
+    if not event:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="指定的活動不存在，無法進行報名",
+        )
+
+    name_clean = name.strip()
+    phone_clean = phone.strip()
+    if not name_clean or not phone_clean:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="姓名與聯絡電話皆為必填欄位",
+        )
+
+    registration = Registration(
+        event_id=event_id,
+        name=name_clean,
+        phone=phone_clean,
+    )
+    try:
+        db.add(registration)
+        db.commit()
+        db.refresh(registration)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"儲存報名資料時發生錯誤：{e}",
+        ) from e
+
+    return {"id": registration.id, "name": registration.name, "phone": registration.phone}
 
 
 def render_page(
@@ -109,7 +232,7 @@ def render_page(
 # ==========================================================
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/server", response_class=HTMLResponse)
 def list_events(
     request: Request,
     message: Optional[str] = None,
@@ -117,7 +240,7 @@ def list_events(
     db: Session = Depends(get_db),
 ):
     """
-    1. GET /：顯示活動列表
+    GET /server：顯示伺服器渲染的活動列表
     """
     try:
         events = db.query(Event).order_by(Event.id.desc()).all()

@@ -1,4 +1,6 @@
-from sqlalchemy import String, Integer, ForeignKey, create_engine
+from datetime import date
+
+from sqlalchemy import String, Integer, ForeignKey, Date, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -22,6 +24,11 @@ class Event(Base):
 
     description: Mapped[str | None] = mapped_column(
         String,
+        nullable=True
+    )
+
+    event_date: Mapped[date | None] = mapped_column(
+        Date,
         nullable=True
     )
 
