@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>活動報名系統</title>
+</head>
+<body>
+  <header>
+    <p>友善參與・安心交流</p>
+    <h1>活動報名系統</h1>
+    <p>瀏覽活動、完成報名，或查看每場活動的報名名單。</p>
+  </header>
+
+  <main>
+    <section aria-labelledby="activities-heading">
+      <h2 id="activities-heading">可報名的活動</h2>
+      <button id="add-activity-button" type="button">新增活動</button>
+      <div id="activity-list" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <dialog id="activity-dialog" aria-labelledby="activity-dialog-title">
+    <form id="activity-form">
+      <h2 id="activity-dialog-title">新增活動</h2>
+      <label for="activity-name">活動名稱
+        <input id="activity-name" name="name" maxlength="100" required>
+      </label>
+      <label for="activity-date">活動日期
+        <input id="activity-date" name="date" type="date">
+      </label>
+      <label for="activity-description">活動說明
+        <textarea id="activity-description" name="description" maxlength="500"></textarea>
+      </label>
+      <button type="button" data-close-dialog>取消</button>
+      <button type="submit">建立活動</button>
+    </form>
+  </dialog>
+
+  <dialog id="signup-dialog" aria-labelledby="signup-dialog-title">
+    <form id="signup-form">
+      <h2 id="signup-dialog-title">活動報名</h2>
+      <label for="signup-name">姓名
+        <input id="signup-name" name="name" autocomplete="name" maxlength="80" required>
+      </label>
+      <label for="signup-phone">連絡電話
+        <input id="signup-phone" name="phone" type="tel" autocomplete="tel" maxlength="30" required>
+      </label>
+      <p>送出報名後，活動主辦方可在報名清單中查看你的資料。</p>
+      <button type="button" data-close-dialog>取消</button>
+      <button type="submit">完成報名</button>
+    </form>
+  </dialog>
+
+  <script>
+    (() => {
+      const storageKey = "activity-registration-data";
+      const activityList = document.getElementById("activity-list");
+      const activityDialog = document.getElementById("activity-dialog");
+      const signupDialog = document.getElementById("signup-dialog");
+      const activityForm = document.getElementById("activity-form");
+      const signupForm = document.getElementById("signup-form");
+      let activities = loadActivities();
+      let selectedActivityId = null;
+      let printHiddenStates = [];
+
+      function loadActivities() {
+        try {
+          const stored = localStorage.getItem(storageKey);
+          if (!stored) return [];
+          const parsed = JSON.parse(stored);
+          if (!Array.isArray(parsed)) throw new Error("活動資料格式不正確。");
+          return parsed;
+        } catch (error) {
+          console.error("無法讀取活動資料：", error);
+          alert("無法讀取已儲存的活動資料，請確認瀏覽器儲存空間後重新整理。");
+          return [];
+        }
+      }
+
+      function saveActivities() {
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(activities));
+          return true;
+        } catch (error) {
+          console.error("無法儲存活動資料：", error);
+          alert("資料儲存失敗，請確認瀏覽器儲存空間設定。");
+          return false;
+        }
+      }
+
+      function makeElement(tag, text) {
+        const element = document.createElement(tag);
+        if (text !== undefined) element.textContent = text;
+        return element;
+      }
+
+      function renderActivities() {
+        activityList.replaceChildren();
+        if (activities.length === 0) {
+          const empty = makeElement("p", "目前還沒有活動，請點選「新增活動」建立第一場活動。");
+          empty.dataset.emptyState = "";
+          activityList.append(empty);
+          return;
+        }
+
+        activities.forEach((activity) => {
+          const card = makeElement("article");
+          const title = makeElement("h3", activity.name);
+          card.append(title);
+          if (activity.date) {
+            const date = makeElement("p");
+            date.append(document.createTextNode("活動日期："));
+            const time = makeElement("time", new Date(`${activity.date}T00:00:00`).toLocaleDateString("zh-TW"));
+            time.dateTime = activity.date;
+            date.append(time);
+            card.append(date);
+          }
+          if (activity.description) card.append(makeElement("p", activity.description));
+
+          const actions = makeElement("p");
+          actions.dataset.cardActions = "";
+          const signupButton = makeElement("button", "立即報名");
+          signupButton.type = "button";
+          signupButton.addEventListener("click", () => openSignup(activity.id));
+          const rosterButton = makeElement("button", `查看報名名單（${activity.registrations.length}）`);
+          rosterButton.type = "button";
+          rosterButton.setAttribute("aria-expanded", "false");
+          const roster = makeElement("section");
+          roster.hidden = true;
+          roster.setAttribute("aria-label", `${activity.name}報名名單`);
+          roster.dataset.roster = "";
+          rosterButton.addEventListener("click", () => {
+            roster.hidden = !roster.hidden;
+            rosterButton.setAttribute("aria-expanded", String(!roster.hidden));
+          });
+          actions.append(signupButton, document.createTextNode(" "), rosterButton);
+          card.append(actions, roster);
+
+          roster.append(makeElement("h4", "報名名單"));
+          if (activity.registrations.length === 0) {
+            roster.append(makeElement("p", "目前尚無報名者。"));
+          } else {
+            const list = makeElement("ul");
+            activity.registrations.forEach((registration) => {
+              list.append(makeElement("li", `${registration.name}｜${registration.phone}`));
+            });
+            roster.append(list);
+          }
+          activityList.append(card);
+        });
+      }
+
+      function openSignup(activityId) {
+        selectedActivityId = activityId;
+        signupForm.reset();
+        signupDialog.showModal();
+        document.getElementById("signup-name").focus();
+      }
+
+      document.getElementById("add-activity-button").addEventListener("click", () => {
+        activityForm.reset();
+        activityDialog.showModal();
+        document.getElementById("activity-name").focus();
+      });
+
+      document.getElementById("print-button").addEventListener("click", () => window.print());
+
+      document.querySelectorAll("[data-close-dialog]").forEach((button) => {
+        button.addEventListener("click", () => button.closest("dialog").close());
+      });
+
+      window.addEventListener("beforeprint", () => {
+        const elementsToHide = document.querySelectorAll(
+          "header p, #print-button, #add-activity-button, [data-card-actions], [data-roster], dialog, [data-empty-state]"
+        );
+        printHiddenStates = Array.from(elementsToHide, (element) => [element, element.hidden]);
+        printHiddenStates.forEach(([element]) => {
+          element.hidden = true;
+        });
+      });
+
+      window.addEventListener("afterprint", () => {
+        printHiddenStates.forEach(([element, wasHidden]) => {
+          element.hidden = wasHidden;
+        });
+        printHiddenStates = [];
+      });
+
+      activityForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const formData = new FormData(activityForm);
+        const activity = {
+          id: crypto.randomUUID(),
+          name: formData.get("name").trim(),
+          date: formData.get("date"),
+          description: formData.get("description").trim(),
+          registrations: []
+        };
+        if (!activity.name) {
+          document.getElementById("activity-name").focus();
+          return;
+        }
+        activities.push(activity);
+        if (!saveActivities()) {
+          activities.pop();
+          return;
+        }
+        activityDialog.close();
+        renderActivities();
+      });
+
+      signupForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const activity = activities.find((item) => item.id === selectedActivityId);
+        if (!activity) {
+          alert("找不到這場活動，請重新整理後再試。");
+          signupDialog.close();
+          return;
+        }
+        const formData = new FormData(signupForm);
+        const registration = {
+          name: formData.get("name").trim(),
+          phone: formData.get("phone").trim()
+        };
+        if (!registration.name || !registration.phone) return;
+        if (activity.registrations.some((item) => item.phone === registration.phone)) {
+          alert("這個連絡電話已報名此活動。");
+          return;
+        }
+        activity.registrations.push(registration);
+        if (!saveActivities()) {
+          activity.registrations.pop();
+          return;
+        }
+        signupDialog.close();
+        renderActivities();
+        alert("報名完成！");
+      });
+
+      renderActivities();
+    })();
+  </script>
+</body>
+</html>
